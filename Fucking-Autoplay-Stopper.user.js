@@ -6,10 +6,45 @@
 // @match        https://www.youtube.com/watch?*
 // @grant        GM_registerMenuCommand
 // @grant        GM_unregisterMenuCommand
+// @grant        GM_setValue
+// @grant        GM_getValue
 // @require      https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.29.1/moment.min.js
 // ==/UserScript==
 
 "use strict";
+
+
+// --- Configuration Settings & Persistent Storage ---
+// These are only read at startup; they are not overwritten unless you interact with the menu.
+const CHECK_INTERVAL = 10 * 1000; // Check every 10 seconds.
+const DEFAULT_INACTIVITY_THRESHOLD = 2 * 60 * 1000; // 5 minutes.
+const DEFAULT_NIGHT_START_HOUR = 0;  // 10 PM.
+const DEFAULT_NIGHT_END_HOUR = 9;     // 9 AM.
+const DEFAULT_OVERRIDE_DURATION = 60 * 60 * 1000; // 60 minutes.
+const TEST_OVERRIDE_DURATION = 10 * 1000;
+
+let inactivityThreshold = GM_getValue("inactivityThreshold", DEFAULT_INACTIVITY_THRESHOLD);
+let nightStartHour      = GM_getValue("nightStartHour", DEFAULT_NIGHT_START_HOUR);
+let nightEndHour        = GM_getValue("nightEndHour", DEFAULT_NIGHT_END_HOUR);
+let overrideDuration    = GM_getValue("overrideDuration", DEFAULT_OVERRIDE_DURATION);
+let testModeEnabled     = GM_getValue("testModeEnabled", false);
+
+// --- Temporary in-memory storage for non-persistent (test mode) values ---
+
+let originalNightStart = null;
+let originalNightEnd = null;
+let originalInactivityThreshold = null;
+let originalOverrideDuration = null;
+
+// --- Global variable to suppress re-pausing.
+let temporaryOverrideUntil = 0;
+
+// --- Activity Tracking ---
+let lastActivityTime = moment();
+
+function updateActivity() {
+  lastActivityTime = moment();
+}
 
 // --- Insert Custom CSS for In-Page Notifications and Modals ---
 const style = document.createElement('style');
@@ -132,37 +167,11 @@ function showInputModal(title, promptText, defaultValue, callback) {
   modal.appendChild(btnContainer);
   overlay.appendChild(modal);
   document.body.appendChild(overlay);
+  setTimeout(() => {
+    input.focus();
+  }, 800);
 }
 
-// --- Configuration Settings ---
-const CHECK_INTERVAL = 10 * 1000;           // Check every 10 seconds.
-let inactivityThreshold = 5 * 60 * 1000;      // Default inactivity threshold: 5 minutes.
-let nightStartHour = 22;                      // Default night start: 10 PM.
-let nightEndHour = 9;                         // Default night end: 9 AM;
-
-// Override durations (in milliseconds)
-const DEFAULT_OVERRIDE_DURATION = 60 * 60 * 1000;
-const TEST_OVERRIDE_DURATION = 30 * 1000;     // 30 seconds in test mode.
-let overrideDuration = DEFAULT_OVERRIDE_DURATION;
-
-// Global variable to suppress re-pausing.
-let temporaryOverrideUntil = 0;
-
-// --- Test Mode Variables ---
-let testModeEnabled = false;
-let originalNightStart = null;
-let originalNightEnd = null;
-let originalInactivityThreshold = null;
-let originalOverrideDuration = null;
-
-// --- Activity Tracking ---
-let lastActivityTime = moment();
-function updateActivity() {
-  lastActivityTime = moment();
-}
-['mousemove', 'keydown', 'click', 'scroll'].forEach(event => {
-  window.addEventListener(event, updateActivity, false);
-});
 
 // --- Helper Function: Is it Night? ---
 function isNight() {
@@ -177,6 +186,7 @@ function isNight() {
 }
 
 // --- Menu Command Management ---
+// All configuration changes are triggered solely by user menu commands.
 let menuTestModeId, menuNightStartId, menuNightEndId, menuInactivityThresholdId, menuOverrideDurationId;
 
 function updateMenuCommands() {
@@ -191,25 +201,44 @@ function updateMenuCommands() {
   menuTestModeId = GM_registerMenuCommand(
     `Toggle Test Mode (Currently ${testModeEnabled ? "ON" : "OFF"})`,
     () => {
+      // This callback is the only place where configuration values are modified.
       testModeEnabled = !testModeEnabled;
       if (testModeEnabled) {
-        if (originalNightStart === null) originalNightStart = nightStartHour;
-        if (originalNightEnd === null) originalNightEnd = nightEndHour;
-        if (originalInactivityThreshold === null) originalInactivityThreshold = inactivityThreshold;
-        if (originalOverrideDuration === null) originalOverrideDuration = overrideDuration;
-
+        // Save current settings in memory only
+        if (originalNightStart === null) {
+          originalNightStart = nightStartHour;
+        }
+        if (originalNightEnd === null) {
+          originalNightEnd = nightEndHour;
+        }
+        if (originalInactivityThreshold === null) {
+          originalInactivityThreshold = inactivityThreshold;
+        }
+        if (originalOverrideDuration === null) {
+          originalOverrideDuration = overrideDuration;
+        }
+        // Apply test mode values.
         nightStartHour = 0;
         nightEndHour = 24;
         inactivityThreshold = 10 * 1000; // 10 seconds
         overrideDuration = TEST_OVERRIDE_DURATION;
+
         showNotification("Test Mode", "Test mode enabled.\nNight forced (0-24), inactivity threshold set to 10 sec,\nand override duration set to 30 sec.\nVideo will pause if no activity is detected for 10 sec.");
       } else {
+
         if (originalNightStart !== null && originalNightEnd !== null && originalInactivityThreshold !== null && originalOverrideDuration !== null) {
           nightStartHour = originalNightStart;
           nightEndHour = originalNightEnd;
           inactivityThreshold = originalInactivityThreshold;
           overrideDuration = originalOverrideDuration;
+
+          // Clear the temporary storage.
+          originalNightStart = null;
+          originalNightEnd = null;
+          originalInactivityThreshold = null;
+          originalOverrideDuration = null;
         }
+
         showNotification("Test Mode", "Test mode disabled.");
       }
       updateMenuCommands();
@@ -223,6 +252,7 @@ function updateMenuCommands() {
         const num = parseInt(value, 10);
         if (!isNaN(num) && num >= 0 && num < 24) {
           nightStartHour = num;
+          GM_setValue("nightStartHour", nightStartHour);
           showNotification("Configuration", "Night start hour set to " + num + ".");
         } else {
           showNotification("Configuration", "Invalid input for night start hour.");
@@ -239,6 +269,7 @@ function updateMenuCommands() {
         const num = parseInt(value, 10);
         if (!isNaN(num) && num >= 0 && num < 24) {
           nightEndHour = num;
+          GM_setValue("nightEndHour", nightEndHour);
           showNotification("Configuration", "Night end hour set to " + num + ".");
         } else {
           showNotification("Configuration", "Invalid input for night end hour.");
@@ -249,12 +280,13 @@ function updateMenuCommands() {
   );
 
   menuInactivityThresholdId = GM_registerMenuCommand(
-    `Set Inactivity Threshold (Current: ${inactivityThreshold/60000} min)`,
+    `Set Inactivity Threshold (Current: ${inactivityThreshold / 60000} min)`,
     () => {
       showInputModal("Inactivity Threshold", "Enter threshold in minutes:", (inactivityThreshold / 60000).toString(), (value) => {
         const num = parseInt(value, 10);
         if (!isNaN(num) && num > 0) {
           inactivityThreshold = num * 60000;
+          GM_setValue("inactivityThreshold", inactivityThreshold);
           showNotification("Configuration", "Inactivity threshold set to " + num + " minutes.");
         } else {
           showNotification("Configuration", "Invalid input for threshold.");
@@ -264,14 +296,14 @@ function updateMenuCommands() {
     }
   );
 
-  // --- New: Menu Command for Override Duration ---
   menuOverrideDurationId = GM_registerMenuCommand(
-    `Set Override Duration (Current: ${overrideDuration/60000} min)`,
+    `Set Override Duration (Current: ${overrideDuration / 60000} min)`,
     () => {
       showInputModal("Override Duration", "Enter override duration in minutes:", (overrideDuration / 60000).toString(), (value) => {
         const num = parseInt(value, 10);
         if (!isNaN(num) && num > 0) {
           overrideDuration = num * 60000;
+          GM_setValue("overrideDuration", overrideDuration);
           showNotification("Configuration", "Override duration set to " + num + " minutes.");
         } else {
           showNotification("Configuration", "Invalid input for override duration.");
@@ -293,7 +325,6 @@ function runMainLoop() {
 
     const now = moment();
     const inactivityDuration = now.diff(lastActivityTime);
-
     const commentsDisabled = document.body.innerText.includes("Comments are turned off");
 
     let inactiveAtNight = false;
@@ -325,3 +356,8 @@ if (document.body) {
 } else {
   document.addEventListener("DOMContentLoaded", runMainLoop);
 }
+
+
+['mousemove', 'keydown', 'click', 'scroll'].forEach(event => {
+  window.addEventListener(event, updateActivity, false);
+});
